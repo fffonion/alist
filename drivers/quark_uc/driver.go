@@ -38,12 +38,21 @@ func (d *QuarkOrUC) GetAddition() driver.Additional {
 
 func (d *QuarkOrUC) Init(ctx context.Context) error {
 	_, err := d.request("/config", http.MethodGet, nil, nil)
-	if err == nil && d.AdditionVersion != 2 {
-		d.AdditionVersion = 2
-		if !d.UseTransCodingAddress && len(d.DownProxyUrl) == 0 {
-			d.WebProxy = true
-			d.WebdavPolicy = "native_proxy"
+	if err == nil && d.AdditionVersion != 3 {
+		if d.AdditionVersion < 2 {
+			if !d.UseTransCodingAddress && len(d.DownProxyUrl) == 0 {
+				d.WebProxy = true
+				d.WebdavPolicy = "native_proxy"
+			}
 		}
+		// 老存储没有这两个字段，补成原来的固定值，保持行为不变
+		if d.DownConcurrency <= 0 {
+			d.DownConcurrency = 3
+		}
+		if d.DownPartSize <= 0 {
+			d.DownPartSize = 10
+		}
+		d.AdditionVersion = 3
 		op.MustSaveDriverStorage(d)
 	}
 	return err
