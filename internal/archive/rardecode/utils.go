@@ -181,7 +181,7 @@ func getReader(ss []*stream.SeekableStream, password string) (*rardecode.Reader,
 	return &rc.Reader, nil
 }
 
-func decompress(reader *rardecode.Reader, header *rardecode.FileHeader, dstPath string) error {
+func decompress(reader *rardecode.Reader, header *rardecode.FileHeader, dstPath string, limiter *tool.SizeLimiter) error {
 	if header.IsDir {
 		return os.MkdirAll(dstPath, 0700)
 	}
@@ -191,16 +191,16 @@ func decompress(reader *rardecode.Reader, header *rardecode.FileHeader, dstPath 
 	if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 		return err
 	}
-	return _decompress(reader, header, dstPath, func(_ float64) {})
+	return _decompress(reader, header, dstPath, func(_ float64) {}, limiter)
 }
 
-func _decompress(reader *rardecode.Reader, header *rardecode.FileHeader, dstPath string, up model.UpdateProgress) error {
+func _decompress(reader *rardecode.Reader, header *rardecode.FileHeader, dstPath string, up model.UpdateProgress, limiter *tool.SizeLimiter) error {
 	f, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	_, err = io.Copy(f, &stream.ReaderUpdatingProgress{
+	_, err = io.Copy(limiter.WrapWriter(f), &stream.ReaderUpdatingProgress{
 		Reader: &stream.SimpleReaderWithSize{
 			Reader: reader,
 			Size:   header.UnPackedSize,

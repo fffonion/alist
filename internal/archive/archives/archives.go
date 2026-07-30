@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	"github.com/alist-org/alist/v3/internal/archive/tool"
+	"github.com/alist-org/alist/v3/internal/conf"
 	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/internal/setting"
 	"github.com/alist-org/alist/v3/internal/stream"
 	"github.com/alist-org/alist/v3/pkg/utils"
 )
@@ -96,6 +98,7 @@ func (Archives) Decompress(ss []*stream.SeekableStream, outputPath string, args 
 	if err != nil {
 		return err
 	}
+	limiter := tool.NewSizeLimiter(int64(setting.GetInt(conf.MaxExtractSize, 0)) << 30)
 	isDir := false
 	path := strings.TrimPrefix(args.InnerPath, "/")
 	if path == "" {
@@ -148,7 +151,7 @@ func (Archives) Decompress(ss []*stream.SeekableStream, outputPath string, args 
 			if err := os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 				return err
 			}
-			return decompress(fsys, p, dstPath, func(_ float64) {})
+			return decompress(fsys, p, dstPath, func(_ float64) {}, limiter)
 		})
 	} else {
 		entryName := stdpath.Base(path)
@@ -159,7 +162,7 @@ func (Archives) Decompress(ss []*stream.SeekableStream, outputPath string, args 
 		if err = os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 			return err
 		}
-		err = decompress(fsys, path, dstPath, up)
+		err = decompress(fsys, path, dstPath, up, limiter)
 	}
 	return filterPassword(err)
 }

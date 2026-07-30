@@ -6,8 +6,10 @@ import (
 	"strings"
 
 	"github.com/alist-org/alist/v3/internal/archive/tool"
+	"github.com/alist-org/alist/v3/internal/conf"
 	"github.com/alist-org/alist/v3/internal/errs"
 	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/internal/setting"
 	"github.com/alist-org/alist/v3/internal/stream"
 )
 
@@ -122,7 +124,8 @@ func (Zip) Decompress(ss []*stream.SeekableStream, outputPath string, args model
 	if err != nil {
 		return err
 	}
-	return tool.DecompressFromFolderTraversal(&WrapReader{Reader: zipReader}, outputPath, args, up)
+	limiter := tool.NewSizeLimiter(int64(setting.GetInt(conf.MaxExtractSize, 0)) << 30)
+	return tool.DecompressFromFolderTraversal(&WrapReader{Reader: zipReader}, outputPath, args, up, limiter)
 }
 
 var _ tool.Tool = (*Zip)(nil)

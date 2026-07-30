@@ -5,8 +5,10 @@ import (
 	"os"
 
 	"github.com/alist-org/alist/v3/internal/archive/tool"
+	"github.com/alist-org/alist/v3/internal/conf"
 	"github.com/alist-org/alist/v3/internal/errs"
 	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/internal/setting"
 	"github.com/alist-org/alist/v3/internal/stream"
 	"github.com/kdomanski/iso9660"
 )
@@ -76,6 +78,7 @@ func (ISO9660) Decompress(ss []*stream.SeekableStream, outputPath string, args m
 	if err != nil {
 		return err
 	}
+	limiter := tool.NewSizeLimiter(int64(setting.GetInt(conf.MaxExtractSize, 0)) << 30)
 	if obj.IsDir() {
 		if args.InnerPath != "/" {
 			outputPath, err = tool.SecureJoin(outputPath, obj.Name())
@@ -88,10 +91,10 @@ func (ISO9660) Decompress(ss []*stream.SeekableStream, outputPath string, args m
 		}
 		var children []*iso9660.File
 		if children, err = obj.GetChildren(); err == nil {
-			err = decompressAll(children, outputPath)
+			err = decompressAll(children, outputPath, limiter)
 		}
 	} else {
-		err = decompress(obj, outputPath, up)
+		err = decompress(obj, outputPath, up, limiter)
 	}
 	return err
 }

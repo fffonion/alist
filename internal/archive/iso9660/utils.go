@@ -63,11 +63,11 @@ func toModelObj(file *iso9660.File) model.Obj {
 	}
 }
 
-func decompress(f *iso9660.File, path string, up model.UpdateProgress) error {
-	return decompressEntry(f.Reader(), f.Size(), path, f.Name(), up)
+func decompress(f *iso9660.File, path string, up model.UpdateProgress, limiter *tool.SizeLimiter) error {
+	return decompressEntry(f.Reader(), f.Size(), path, f.Name(), up, limiter)
 }
 
-func decompressEntry(reader io.Reader, size int64, path, entryName string, up model.UpdateProgress) error {
+func decompressEntry(reader io.Reader, size int64, path, entryName string, up model.UpdateProgress, limiter *tool.SizeLimiter) error {
 	dstPath, err := tool.SecureJoin(path, entryName)
 	if err != nil {
 		return err
@@ -80,7 +80,7 @@ func decompressEntry(reader io.Reader, size int64, path, entryName string, up mo
 		return err
 	}
 	defer file.Close()
-	_, err = utils.CopyWithBuffer(file, &stream.ReaderUpdatingProgress{
+	_, err = utils.CopyWithBuffer(limiter.WrapWriter(file), &stream.ReaderUpdatingProgress{
 		Reader: &stream.SimpleReaderWithSize{
 			Reader: reader,
 			Size:   size,
@@ -90,7 +90,7 @@ func decompressEntry(reader io.Reader, size int64, path, entryName string, up mo
 	return err
 }
 
-func decompressAll(children []*iso9660.File, path string) error {
+func decompressAll(children []*iso9660.File, path string, limiter *tool.SizeLimiter) error {
 	for _, child := range children {
 		if child.IsDir() {
 			nextChildren, err := child.GetChildren()
@@ -104,11 +104,11 @@ func decompressAll(children []*iso9660.File, path string) error {
 			if err = os.MkdirAll(nextPath, 0700); err != nil {
 				return err
 			}
-			if err = decompressAll(nextChildren, nextPath); err != nil {
+			if err = decompressAll(nextChildren, nextPath, limiter); err != nil {
 				return err
 			}
 		} else {
-			if err := decompress(child, path, func(_ float64) {}); err != nil {
+			if err := decompress(child, path, func(_ float64) {}, limiter); err != nil {
 				return err
 			}
 		}

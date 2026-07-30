@@ -115,7 +115,7 @@ type WrapFileInfo struct {
 	model.Obj
 }
 
-func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args model.ArchiveInnerArgs, up model.UpdateProgress) error {
+func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args model.ArchiveInnerArgs, up model.UpdateProgress, limiter *SizeLimiter) error {
 	var err error
 	files := r.Files()
 	if args.InnerPath == "/" {
@@ -144,7 +144,7 @@ func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args mode
 			if err = os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 				return err
 			}
-			err = _decompress(file, dstPath, args.Password, func(_ float64) {})
+			err = _decompress(file, dstPath, args.Password, func(_ float64) {}, limiter)
 			if err != nil {
 				return err
 			}
@@ -183,7 +183,7 @@ func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args mode
 				if err = os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 					return err
 				}
-				err = _decompress(file, dstPath, args.Password, up)
+				err = _decompress(file, dstPath, args.Password, up, limiter)
 				if err != nil {
 					return err
 				}
@@ -227,7 +227,7 @@ func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args mode
 				if err = os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 					return err
 				}
-				err = _decompress(file, dstPath, args.Password, func(_ float64) {})
+				err = _decompress(file, dstPath, args.Password, func(_ float64) {}, limiter)
 				if err != nil {
 					return err
 				}
@@ -237,7 +237,7 @@ func DecompressFromFolderTraversal(r ArchiveReader, outputPath string, args mode
 	return nil
 }
 
-func _decompress(file SubFile, dstPath, password string, up model.UpdateProgress) error {
+func _decompress(file SubFile, dstPath, password string, up model.UpdateProgress, limiter *SizeLimiter) error {
 	if encrypt, ok := file.(CanEncryptSubFile); ok && encrypt.IsEncrypted() {
 		encrypt.SetPassword(password)
 	}
@@ -251,7 +251,7 @@ func _decompress(file SubFile, dstPath, password string, up model.UpdateProgress
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	_, err = io.Copy(f, &stream.ReaderUpdatingProgress{
+	_, err = io.Copy(limiter.WrapWriter(f), &stream.ReaderUpdatingProgress{
 		Reader: &stream.SimpleReaderWithSize{
 			Reader: rc,
 			Size:   file.FileInfo().Size(),

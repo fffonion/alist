@@ -172,6 +172,7 @@ func InitialSettings() []model.SettingItem {
 		{Key: conf.DeviceEvictPolicy, Value: "deny", Type: conf.TypeSelect, Options: "deny,evict_oldest", Group: model.GLOBAL},
 		{Key: conf.DeviceSessionTTL, Value: "86400", Type: conf.TypeNumber, Group: model.GLOBAL},
 		{Key: conf.MetaNotFoundCacheExpire, Value: "60", Type: conf.TypeNumber, Group: model.GLOBAL, Flag: model.PRIVATE, Help: "Negative cache expiration for missing meta records, in seconds. Set 0 to disable."},
+		{Key: conf.MaxExtractSize, Value: "0", Type: conf.TypeNumber, Group: model.GLOBAL, Flag: model.PRIVATE, Help: "Max total size of files decompressed by a single task, in GB. Set 0 for unlimited."},
 
 		// single settings
 		{Key: conf.Token, Value: token, Type: conf.TypeString, Group: model.SINGLE, Flag: model.PRIVATE},

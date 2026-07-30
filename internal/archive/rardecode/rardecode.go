@@ -9,8 +9,10 @@ import (
 	"strings"
 
 	"github.com/alist-org/alist/v3/internal/archive/tool"
+	"github.com/alist-org/alist/v3/internal/conf"
 	"github.com/alist-org/alist/v3/internal/errs"
 	"github.com/alist-org/alist/v3/internal/model"
+	"github.com/alist-org/alist/v3/internal/setting"
 	"github.com/alist-org/alist/v3/internal/stream"
 	"github.com/nwaples/rardecode/v2"
 )
@@ -74,6 +76,7 @@ func (RarDecoder) Decompress(ss []*stream.SeekableStream, outputPath string, arg
 	if err != nil {
 		return err
 	}
+	limiter := tool.NewSizeLimiter(int64(setting.GetInt(conf.MaxExtractSize, 0)) << 30)
 	if args.InnerPath == "/" {
 		for {
 			var header *rardecode.FileHeader
@@ -92,7 +95,7 @@ func (RarDecoder) Decompress(ss []*stream.SeekableStream, outputPath string, arg
 			if e != nil {
 				return e
 			}
-			err = decompress(reader, header, dstPath)
+			err = decompress(reader, header, dstPath, limiter)
 			if err != nil {
 				return err
 			}
@@ -139,7 +142,7 @@ func (RarDecoder) Decompress(ss []*stream.SeekableStream, outputPath string, arg
 				if err = os.MkdirAll(filepath.Dir(dstPath), 0700); err != nil {
 					return err
 				}
-				err = _decompress(reader, header, dstPath, up)
+				err = _decompress(reader, header, dstPath, up, limiter)
 				if err != nil {
 					return err
 				}
@@ -164,7 +167,7 @@ func (RarDecoder) Decompress(ss []*stream.SeekableStream, outputPath string, arg
 				if e != nil {
 					return e
 				}
-				err = decompress(reader, header, dstPath)
+				err = decompress(reader, header, dstPath, limiter)
 				if err != nil {
 					return err
 				}

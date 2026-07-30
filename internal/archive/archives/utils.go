@@ -60,7 +60,7 @@ func filterPassword(err error) error {
 	return err
 }
 
-func decompress(fsys fs2.FS, filePath, dstPath string, up model.UpdateProgress) error {
+func decompress(fsys fs2.FS, filePath, dstPath string, up model.UpdateProgress, limiter *tool.SizeLimiter) error {
 	rc, err := fsys.Open(filePath)
 	if err != nil {
 		return err
@@ -78,7 +78,7 @@ func decompress(fsys fs2.FS, filePath, dstPath string, up model.UpdateProgress) 
 		return err
 	}
 	defer f.Close()
-	_, err = utils.CopyWithBuffer(f, &stream.ReaderUpdatingProgress{
+	_, err = utils.CopyWithBuffer(limiter.WrapWriter(f), &stream.ReaderUpdatingProgress{
 		Reader: &stream.SimpleReaderWithSize{
 			Reader: rc,
 			Size:   stat.Size(),

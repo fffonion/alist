@@ -54,6 +54,7 @@ const (
 	DeviceEvictPolicy       = "device_evict_policy"
 	DeviceSessionTTL        = "device_session_ttl"
 	MetaNotFoundCacheExpire = "meta_not_found_cache_expire"
+	MaxExtractSize          = "max_extract_size"
 
 	// index
 	SearchIndex     = "search_index"
