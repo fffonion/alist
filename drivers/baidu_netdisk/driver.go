@@ -1,12 +1,15 @@
 package baidu_netdisk
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
+	"net/http"
 	"net/url"
 	"os"
 	stdpath "path"
@@ -24,7 +27,6 @@ import (
 	"github.com/alist-org/alist/v3/pkg/singleflight"
 	"github.com/alist-org/alist/v3/pkg/utils"
 	"github.com/avast/retry-go"
-	"github.com/go-resty/resty/v2"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -35,7 +37,6 @@ type BaiduNetdisk struct {
 	uploadThread int
 	vipType      int // 会员类型，0普通用户(4G/4M)、1普通会员(10G/16M)、2超级会员(20G/32M)
 
-	upClient            *resty.Client // 上传文件使用的http客户端
 	uploadUrlG          singleflight.Group[string]
 	uploadUrlMu         sync.RWMutex
 	uploadUrl           string    // 上传域名
@@ -53,11 +54,6 @@ func (d *BaiduNetdisk) GetAddition() driver.Additional {
 }
 
 func (d *BaiduNetdisk) Init(ctx context.Context) error {
-	d.upClient = base.NewRestyClient().
-		SetTimeout(UPLOAD_TIMEOUT).
-		SetRetryCount(UPLOAD_RETRY_COUNT).
-		SetRetryWaitTime(UPLOAD_RETRY_WAIT_TIME).
-		SetRetryMaxWaitTime(UPLOAD_RETRY_MAX_WAIT_TIME)
 	d.uploadThread, _ = strconv.Atoi(d.UploadThread)
 	if d.uploadThread < 1 {
 		d.uploadThread, d.UploadThread = 1, "1"
@@ -333,8 +329,7 @@ uploadLoop:
 					"uploadid":     precreateResp.Uploadid,
 					"partseq":      strconv.Itoa(partseq),
 				}
-				section := io.NewSectionReader(cacheReaderAt, offset, size)
-				err := d.uploadSlice(ctx, uploadUrl, params, stream.GetName(), driver.NewLimitedUploadStream(ctx, section))
+				err := d.uploadSlice(ctx, uploadUrl, params, stream.GetName(), cacheReaderAt, offset, size)
 				if err != nil {
 					return err
 				}
@@ -426,29 +421,90 @@ func (d *BaiduNetdisk) precreate(ctx context.Context, path string, streamSize in
 	return &precreateResp, nil
 }
 
-func (d *BaiduNetdisk) uploadSlice(ctx context.Context, uploadUrl string, params map[string]string, fileName string, file io.Reader) error {
-	res, err := d.upClient.R().
-		SetContext(ctx).
-		SetQueryParams(params).
-		SetFileReader("file", fileName, file).
-		Post(uploadUrl + "/rest/2.0/pcs/superfile2")
-	if err != nil {
-		return err
-	}
-	log.Debugln(res.RawResponse.Status + res.String())
-	errCode := utils.Json.Get(res.Body(), "error_code").ToInt()
-	errNo := utils.Json.Get(res.Body(), "errno").ToInt()
-	respStr := res.String()
-	lower := strings.ToLower(respStr)
-	if strings.Contains(lower, "uploadid") &&
-		(strings.Contains(lower, "invalid") || strings.Contains(lower, "expired") || strings.Contains(lower, "not found")) {
-		return ErrUploadIDExpired
-	}
+// uploadSlice 流式上传分片，流式body无法重放，传输失败时基于SectionReader重建body重试
+func (d *BaiduNetdisk) uploadSlice(ctx context.Context, uploadUrl string, params map[string]string, fileName string, file io.ReaderAt, offset, size int64) error {
+	var lastErr error
+	for attempt := 0; attempt <= UPLOAD_RETRY_COUNT; attempt++ {
+		if attempt > 0 {
+			wait := UPLOAD_RETRY_WAIT_TIME << (attempt - 1)
+			if wait > UPLOAD_RETRY_MAX_WAIT_TIME {
+				wait = UPLOAD_RETRY_MAX_WAIT_TIME
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+		}
+		body, err := d.doUploadSlice(ctx, uploadUrl, params, fileName, file, offset, size)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		errCode := utils.Json.Get(body, "error_code").ToInt()
+		errNo := utils.Json.Get(body, "errno").ToInt()
+		respStr := string(body)
+		lower := strings.ToLower(respStr)
+		if strings.Contains(lower, "uploadid") &&
+			(strings.Contains(lower, "invalid") || strings.Contains(lower, "expired") || strings.Contains(lower, "not found")) {
+			return ErrUploadIDExpired
+		}
 
-	if errCode != 0 || errNo != 0 {
-		return errs.NewErr(errs.StreamIncomplete, "error uploading to baidu, response=%s", res.String())
+		if errCode != 0 || errNo != 0 {
+			return errs.NewErr(errs.StreamIncomplete, "error uploading to baidu, response=%s", respStr)
+		}
+		return nil
 	}
-	return nil
+	return lastErr
+}
+
+func (d *BaiduNetdisk) doUploadSlice(ctx context.Context, uploadUrl string, params map[string]string, fileName string, file io.ReaderAt, offset, size int64) ([]byte, error) {
+	pr, pw := io.Pipe()
+	mw := multipart.NewWriter(pw)
+	go func() {
+		part, err := mw.CreateFormFile("file", fileName)
+		if err == nil {
+			section := io.NewSectionReader(file, offset, size)
+			_, err = utils.CopyWithBuffer(part, driver.NewLimitedUploadStream(ctx, section))
+		}
+		if err == nil {
+			err = mw.Close()
+		}
+		_ = pw.CloseWithError(err)
+	}()
+
+	reqCtx, cancel := context.WithTimeout(ctx, UPLOAD_TIMEOUT)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, uploadUrl+"/rest/2.0/pcs/superfile2", pr)
+	if err != nil {
+		_ = pr.Close()
+		return nil, err
+	}
+	query := req.URL.Query()
+	for k, v := range params {
+		query.Set(k, v)
+	}
+	req.URL.RawQuery = query.Encode()
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("User-Agent", base.UserAgent)
+	var overhead bytes.Buffer
+	ow := multipart.NewWriter(&overhead)
+	_ = ow.SetBoundary(mw.Boundary())
+	_, _ = ow.CreateFormFile("file", fileName)
+	_ = ow.Close()
+	req.ContentLength = int64(overhead.Len()) + size
+
+	res, err := base.HttpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	log.Debugln(res.Status + string(body))
+	return body, nil
 }
 
 var _ driver.Driver = (*BaiduNetdisk)(nil)
