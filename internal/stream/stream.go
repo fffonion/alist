@@ -264,7 +264,7 @@ func (ss *SeekableStream) Read(p []byte) (n int, err error) {
 		}
 		rc, err := ss.rangeReadCloser.RangeRead(ss.Ctx, http_range.Range{Length: -1})
 		if err != nil {
-			return 0, nil
+			return 0, err
 		}
 		ss.Reader = io.NopCloser(rc)
 	}
