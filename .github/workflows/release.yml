@@ -19,6 +19,8 @@ jobs:
         go-version: [ '1.21' ]
     name: Release
     runs-on: ${{ matrix.platform }}
+    permissions:
+      contents: write
     steps:
 
       - name: Free Disk Space (Ubuntu)
@@ -40,7 +42,7 @@ jobs:
       - name: Prerelease
         uses: irongut/EditRelease@v1.2.0
         with:
-          token: ${{ secrets.MY_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
           id: ${{ github.event.release.id }}
           prerelease: true
 
