@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alist-org/alist/v3/drivers/base"
@@ -26,6 +27,12 @@ type QuarkOrUC struct {
 	Addition
 	config driver.Config
 	conf   Conf
+
+	// client 用于测试时注入自定义 client，nil 时使用全局 base.RestyClient
+	client *resty.Client
+
+	refreshMu sync.Mutex
+	cancel    context.CancelFunc
 }
 
 func (d *QuarkOrUC) Config() driver.Config {
@@ -46,10 +53,18 @@ func (d *QuarkOrUC) Init(ctx context.Context) error {
 		}
 		op.MustSaveDriverStorage(d)
 	}
+	// 定时刷新 __puus，避免会话 cookie 过期后下载 403（见 AlistGo/alist#830）
+	d.startRefreshLoop()
 	return err
 }
 
 func (d *QuarkOrUC) Drop(ctx context.Context) error {
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+	if d.cancel != nil {
+		d.cancel()
+		d.cancel = nil
+	}
 	return nil
 }
 
