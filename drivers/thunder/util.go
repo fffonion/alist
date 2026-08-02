@@ -17,9 +17,13 @@ import (
 )
 
 const (
-	API_URL             = "https://api-pan.xunlei.com/drive/v1"
-	FILE_API_URL        = API_URL + "/files"
-	TASK_API_URL        = API_URL + "/tasks"
+	API_URL      = "https://api-pan.xunlei.com/drive/v1"
+	FILE_API_URL = API_URL + "/files"
+	TASK_API_URL = API_URL + "/tasks"
+)
+
+// 可变量，便于测试时指向本地 mock 服务
+var (
 	XLUSER_API_BASE_URL = "https://xluser-ssl.xunlei.com"
 	XLUSER_API_URL      = XLUSER_API_BASE_URL + "/v1"
 )

@@ -75,18 +75,23 @@ func (x *Thunder) Init(ctx context.Context) (err error) {
 			},
 			refreshTokenFunc: func() error {
 				// 通过RefreshToken刷新
-				token, err := x.RefreshToken(x.TokenResp.RefreshToken)
+				token, err := x.XunLeiCommon.RefreshToken(x.TokenResp.RefreshToken)
 				if err != nil {
 					// 重新登录
 					token, err = x.Login(x.Username, x.Password)
 					if err != nil {
 						x.GetStorage().SetStatus(fmt.Sprintf("%+v", err.Error()))
-						op.MustSaveDriverStorage(x)
+					} else {
+						// 登录成功，清空已消费的信任密钥
+						x.Addition.CreditKey = ""
 					}
-					// 清空 信任密钥
-					x.Addition.CreditKey = ""
 				}
-				x.SetTokenResp(token)
+				if token != nil {
+					x.SetTokenResp(token)
+					// 持久化最新的 refresh token，避免重启后重新登录
+					x.Addition.RefreshToken = token.RefreshToken
+				}
+				op.MustSaveDriverStorage(x)
 				return err
 			},
 		}
@@ -113,14 +118,30 @@ func (x *Thunder) Init(ctx context.Context) (err error) {
 	identity := x.GetIdentity()
 	if x.identity != identity || !x.IsLogin() {
 		x.identity = identity
+		// 优先使用已保存的 RefreshToken 恢复登录态，避免每次重启都触发风控验证
+		if x.Addition.RefreshToken != "" {
+			token, err := x.XunLeiCommon.RefreshToken(x.Addition.RefreshToken)
+			if err == nil && token != nil && token.RefreshToken != "" {
+				x.SetTokenResp(token)
+				// 更新并持久化最新的 refresh token
+				x.Addition.RefreshToken = token.RefreshToken
+				// 清空已消费的信任密钥并落库
+				x.Addition.CreditKey = ""
+				op.MustSaveDriverStorage(x)
+				return nil
+			}
+			// 刷新失败，回退到账号密码登录
+		}
 		// 登录
 		token, err := x.Login(x.Username, x.Password)
 		if err != nil {
 			return err
 		}
-		// 清空 信任密钥
+		// 清空已消费的信任密钥并落库
 		x.Addition.CreditKey = ""
 		x.SetTokenResp(token)
+		x.Addition.RefreshToken = token.RefreshToken
+		op.MustSaveDriverStorage(x)
 	}
 	return nil
 }

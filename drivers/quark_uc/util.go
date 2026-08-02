@@ -161,11 +161,17 @@ func (d *QuarkOrUC) refreshLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := d.refreshPuus(); err != nil {
-				log.Warnf("quark: refresh __puus failed: %v", err)
-			}
+			_ = d.refreshPuus()
 		}
 	}
+}
+
+// maskSecret 打码敏感值，仅用于日志展示
+func maskSecret(s string) string {
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:8] + "***"
 }
 
 // refreshPuus 发起一次不带 __puus 的请求，让服务端重新下发会话 cookie。
@@ -176,12 +182,16 @@ func (d *QuarkOrUC) refreshPuus() error {
 	if _, err := d.request("/config", http.MethodGet, nil, nil); err != nil {
 		// 刷新失败时恢复原 cookie，避免破坏当前会话
 		d.Cookie = old
+		log.Warnf("quark: refresh __puus failed: %v", err)
 		return err
 	}
 	if cookie.GetStr(d.Cookie, "__puus") == "" {
 		// 服务端未重新下发，恢复原 cookie
 		d.Cookie = old
+		log.Infof("quark: __puus not refreshed, server did not reissue a new value, keeping existing cookie")
+		return nil
 	}
+	log.Infof("quark: __puus refreshed successfully: %s", maskSecret(cookie.GetStr(d.Cookie, "__puus")))
 	return nil
 }
 
