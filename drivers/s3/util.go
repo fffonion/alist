@@ -39,7 +39,17 @@ func (d *S3) initSession() error {
 		S3ForcePathStyle: aws.Bool(d.ForcePathStyle),
 	}
 	d.Session, err = session.NewSession(cfg)
-	return err
+	if err != nil {
+		return err
+	}
+	if d.UserAgent != "" {
+		// session-level so every client built from it (API client, uploader,
+		// presigner) sends the configured User-Agent
+		d.Session.Handlers.Build.PushBack(func(r *request.Request) {
+			r.HTTPRequest.Header.Set("User-Agent", d.UserAgent)
+		})
+	}
+	return nil
 }
 
 func (d *S3) getClient(link bool) *s3.S3 {
