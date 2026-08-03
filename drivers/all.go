@@ -28,6 +28,7 @@ import (
 	_ "github.com/alist-org/alist/v3/drivers/cloudreve"
 	_ "github.com/alist-org/alist/v3/drivers/cloudreve_v4"
 	_ "github.com/alist-org/alist/v3/drivers/crypt"
+	_ "github.com/alist-org/alist/v3/drivers/cstcloud_capsule"
 	_ "github.com/alist-org/alist/v3/drivers/darkibox"
 	_ "github.com/alist-org/alist/v3/drivers/doubao"
 	_ "github.com/alist-org/alist/v3/drivers/doubao_new"
