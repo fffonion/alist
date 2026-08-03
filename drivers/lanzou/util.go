@@ -146,20 +146,44 @@ func (d *LanZou) request(url string, method string, callback base.ReqCallback, u
 	return body, errors.New("acw_sc__v2 validation error")
 }
 
+var loginURL = "https://up.woozooo.com/mlogin.php"
+
 func (d *LanZou) Login() ([]*http.Cookie, error) {
-	resp, err := base.NewRestyClient().SetRedirectPolicy(resty.NoRedirectPolicy()).
-		R().SetFormData(map[string]string{
-		"task":         "3",
-		"uid":          d.Account,
-		"pwd":          d.Password,
-		"setSessionId": "",
-		"setSig":       "",
-		"setScene":     "",
-		"setTocen":     "",
-		"formhash":     "",
-	}).Post("https://up.woozooo.com/mlogin.php")
-	if err != nil {
-		return nil, err
+	client := base.NewRestyClient().SetRedirectPolicy(resty.NoRedirectPolicy())
+	// 登录接口同样可能返回 acw_sc__v2 反爬挑战页,需算出 cookie 后重试
+	var acwScV2 string
+	var resp *resty.Response
+	var err error
+	for i := 0; i < 3; i++ {
+		req := client.R().SetFormData(map[string]string{
+			"task":         "3",
+			"uid":          d.Account,
+			"pwd":          d.Password,
+			"setSessionId": "",
+			"setSig":       "",
+			"setScene":     "",
+			"setTocen":     "",
+			"formhash":     "",
+		})
+		if d.UserAgent != "" {
+			req.SetHeader("User-Agent", d.UserAgent)
+		}
+		if acwScV2 != "" {
+			req.SetCookie(&http.Cookie{Name: "acw_sc__v2", Value: acwScV2})
+		}
+		resp, err = req.Post(loginURL)
+		if err != nil {
+			return nil, err
+		}
+		if findAcwScV2Reg.Match(resp.Body()) {
+			vs, e := CalcAcwScV2(resp.String())
+			if e != nil {
+				return nil, fmt.Errorf("login err: %w, data: %s", e, resp.Body())
+			}
+			acwScV2 = vs
+			continue
+		}
+		break
 	}
 	if utils.Json.Get(resp.Body(), "zt").ToInt() != 1 {
 		return nil, fmt.Errorf("login err: %s", resp.Body())
