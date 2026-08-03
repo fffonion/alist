@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,11 +25,37 @@ import (
 
 // do others that not defined in Driver interface
 
+// puusRefreshInterval __puus 有效期约 3 小时，提前定时刷新，见 AlistGo/alist#830。
+// 100 分钟刷新一次，叠加 ±5 分钟（精确到秒）的随机抖动，
+// 避免多个实例/账号在同一时刻集中刷新
+const (
+	puusRefreshInterval = 100 * time.Minute
+	puusRefreshJitter   = 5 * time.Minute
+)
+
+// refreshJitter 返回 [-5min, +5min] 的随机抖动，精确到秒
+func refreshJitter() time.Duration {
+	seconds := rand.Int63n(2*int64(puusRefreshJitter/time.Second)+1) - int64(puusRefreshJitter/time.Second)
+	return time.Duration(seconds) * time.Second
+}
+
 func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
+	d.cookieMu.Lock()
+	cookieStr := d.Cookie
+	d.cookieMu.Unlock()
+	return d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+}
+
+// requestWithCookie 使用指定的 cookie 发起请求，响应中的 __puus/__pus 会合并回 d.Cookie
+func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, error) {
 	u := d.conf.api + pathname
-	req := base.RestyClient.R()
+	client := base.RestyClient
+	if d.client != nil {
+		client = d.client
+	}
+	req := client.R()
 	req.SetHeaders(map[string]string{
-		"Cookie":  d.Cookie,
+		"Cookie":  cookieStr,
 		"Accept":  "application/json, text/plain, */*",
 		"Referer": d.conf.referer,
 	})
@@ -46,17 +73,23 @@ func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCal
 	if err != nil {
 		return nil, err
 	}
+	var updated bool
+	d.cookieMu.Lock()
 	__puus := cookie.GetCookie(res.Cookies(), "__puus")
 	if __puus != nil {
 		d.Cookie = cookie.SetStr(d.Cookie, "__puus", __puus.Value)
-		op.MustSaveDriverStorage(d)
+		updated = true
 	}
 	if d.UseTransCodingAddress && d.config.Name == "Quark" {
 		__pus := cookie.GetCookie(res.Cookies(), "__pus")
 		if __pus != nil {
 			d.Cookie = cookie.SetStr(d.Cookie, "__pus", __pus.Value)
-			op.MustSaveDriverStorage(d)
+			updated = true
 		}
+	}
+	d.cookieMu.Unlock()
+	if updated {
+		op.MustSaveDriverStorage(d)
 	}
 	if e.Status >= 400 || e.Code != 0 {
 		return nil, errors.New(e.Message)
@@ -111,10 +144,16 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	}
 	var resp DownResp
 	ua := d.conf.ua
-	_, err := d.request("/file/download", http.MethodPost, func(req *resty.Request) {
+	// 快照请求前的 cookie：下载 URL 的签名基于请求 /file/download 时携带的 cookie 生成，
+	// 下载请求头必须与之一致，否则会被上游判定签名无效返回 403。
+	// 请求和下载头使用同一个快照，避免定时刷新并发修改 d.Cookie 导致两者不一致。
+	d.cookieMu.Lock()
+	reqCookie := d.Cookie
+	d.cookieMu.Unlock()
+	_, err := d.requestWithCookie("/file/download", http.MethodPost, func(req *resty.Request) {
 		req.SetHeader("User-Agent", ua).
 			SetBody(data)
-	}, &resp)
+	}, &resp, reqCookie)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +161,7 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	link := &model.Link{
 		URL: resp.Data[0].DownloadUrl,
 		Header: http.Header{
-			"Cookie":     []string{d.Cookie},
+			"Cookie":     []string{reqCookie},
 			"Referer":    []string{d.conf.referer},
 			"User-Agent": []string{ua},
 		},
@@ -142,6 +181,66 @@ func (d *QuarkOrUC) applyLinkLimit(link *model.Link) {
 	}
 	link.Concurrency = d.DownConcurrency
 	link.PartSize = partSize * utils.MB
+}
+
+// startRefreshLoop 启动 __puus 定时刷新，保证会话 cookie 不过期
+func (d *QuarkOrUC) startRefreshLoop() {
+	d.refreshMu.Lock()
+	defer d.refreshMu.Unlock()
+	if d.cancel != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	d.cancel = cancel
+	go d.refreshLoop(ctx)
+}
+
+func (d *QuarkOrUC) refreshLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(puusRefreshInterval + refreshJitter()):
+			_ = d.refreshPuus()
+		}
+	}
+}
+
+// maskSecret 打码敏感值，仅用于日志展示
+func maskSecret(s string) string {
+	if len(s) <= 8 {
+		return "***"
+	}
+	return s[:8] + "***"
+}
+
+// refreshPuus 发起一次不带 __puus 的请求，让服务端重新下发会话 cookie。
+// 服务端只在请求缺失 __puus 字段时才更新该 cookie（见 AlistGo/alist#830）。
+func (d *QuarkOrUC) refreshPuus() error {
+	d.cookieMu.Lock()
+	old := d.Cookie
+	stripped := cookie.DelStr(old, "__puus")
+	d.cookieMu.Unlock()
+	_, err := d.requestWithCookie("/config", http.MethodGet, nil, nil, stripped)
+	d.cookieMu.Lock()
+	defer d.cookieMu.Unlock()
+	if err != nil {
+		// 刷新失败：仅当没有其他请求带来更新的 __puus 时才恢复旧值，
+		// 避免覆盖并发请求刚合并进来的新 cookie
+		if cookie.GetStr(d.Cookie, "__puus") == "" {
+			d.Cookie = old
+		}
+		log.Warnf("quark: refresh __puus failed: %v", err)
+		return err
+	}
+	if cookie.GetStr(d.Cookie, "__puus") == "" {
+		// 服务端未重新下发：同样只在没有并发新值时恢复旧值
+		d.Cookie = old
+		log.Infof("quark: __puus not refreshed, server did not reissue a new value, keeping existing cookie")
+		return nil
+	}
+	log.Infof("quark: __puus refreshed successfully: %s", maskSecret(cookie.GetStr(d.Cookie, "__puus")))
+	return nil
 }
 
 func (d *QuarkOrUC) getTranscodingLink(file model.Obj) (*model.Link, error) {
