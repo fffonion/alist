@@ -89,12 +89,6 @@ func JoinBasePath(basePath, reqPath string) (string, error) {
 		return "", errs.RelativePath
 	}
 
-	reqPath = FixAndCleanPath(reqPath)
-
-	if strings.HasPrefix(reqPath, "/") {
-		return reqPath, nil
-	}
-
 	return stdpath.Join(FixAndCleanPath(basePath), FixAndCleanPath(reqPath)), nil
 }
 

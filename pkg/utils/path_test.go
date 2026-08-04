@@ -66,3 +66,36 @@ func TestJoinUnderBase(t *testing.T) {
 		t.Fatalf("expected nested path to be rejected")
 	}
 }
+
+func TestJoinBasePath(t *testing.T) {
+	// A user's base path confines every request path, not just "/".
+	datas := []struct {
+		basePath string
+		reqPath  string
+		want     string
+	}{
+		{"/public", "/", "/public"},
+		{"/public", "/sub", "/public/sub"},
+		{"/public", "sub", "/public/sub"},
+		{"/public", "/sub/file.txt", "/public/sub/file.txt"},
+		{"/public", "/other_storage", "/public/other_storage"},
+		{"/", "/sub", "/sub"},
+		{"", "/sub", "/sub"},
+	}
+	for _, d := range datas {
+		got, err := JoinBasePath(d.basePath, d.reqPath)
+		if err != nil {
+			t.Fatalf("JoinBasePath(%q, %q) error: %v", d.basePath, d.reqPath, err)
+		}
+		if got != d.want {
+			t.Errorf("JoinBasePath(%q, %q) = %q, want %q", d.basePath, d.reqPath, got, d.want)
+		}
+	}
+
+	// relative segments must still be rejected
+	for _, reqPath := range []string{"..", "../x", "/x/..", "/x/../y"} {
+		if _, err := JoinBasePath("/public", reqPath); err == nil {
+			t.Errorf("JoinBasePath(%q, %q) expected error, got nil", "/public", reqPath)
+		}
+	}
+}
