@@ -55,6 +55,7 @@ require (
 	github.com/minio/sio v0.4.0
 	github.com/natefinch/lumberjack v2.0.0+incompatible
 	github.com/ncw/swift/v2 v2.0.3
+	github.com/okatu-loli/go-123pan v1.1.1
 	github.com/pkg/errors v0.9.1
 	github.com/pkg/sftp v1.13.6
 	github.com/pquerna/otp v1.4.0
@@ -77,7 +78,7 @@ require (
 	golang.org/x/image v0.19.0
 	golang.org/x/net v0.48.0
 	golang.org/x/oauth2 v0.34.0
-	golang.org/x/time v0.8.0
+	golang.org/x/time v0.12.0
 	google.golang.org/appengine v1.6.8
 	gopkg.in/ldap.v3 v3.1.0
 	gorm.io/driver/mysql v1.5.7

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	_115 "github.com/alist-org/alist/v3/drivers/115"
+	_123Open "github.com/alist-org/alist/v3/drivers/123_open"
 	"github.com/alist-org/alist/v3/drivers/guangyapan"
 	"github.com/alist-org/alist/v3/drivers/pikpak"
 	"github.com/alist-org/alist/v3/drivers/thunder"
@@ -103,6 +104,16 @@ func AddURL(ctx context.Context, args *AddURLArgs) (task.TaskExtensionInfo, erro
 			tempDir = args.DstDirPath
 		} else {
 			tempDir = filepath.Join(setting.GetStr(conf.ThunderTempDir), uid)
+		}
+	case Open123ToolName:
+		if _, ok := storage.(*_123Open.Open123); ok {
+			tempDir = args.DstDirPath
+		} else {
+			tempBase := setting.GetStr(Open123TempDir)
+			if tempBase == "" {
+				return nil, errors.New("123 Open temp dir is not set")
+			}
+			tempDir = filepath.Join(tempBase, uid)
 		}
 	case "GuangYaPan":
 		if _, ok := storage.(*guangyapan.GuangYaPan); ok {

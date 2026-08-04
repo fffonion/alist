@@ -4,6 +4,17 @@ import (
 	"github.com/alist-org/alist/v3/internal/model"
 )
 
+const (
+	// Open123ToolName is the name the 123 Open offline download tool registers
+	// itself under.
+	Open123ToolName = "123 Open"
+	// Open123TempDir is the setting key holding the scratch directory the 123
+	// Open tool downloads into when the destination is another storage. It
+	// lives here rather than in internal/conf because the tool registers the
+	// setting itself, through Tool.Items.
+	Open123TempDir = "123_open_temp_dir"
+)
+
 type AddUrlArgs struct {
 	Url     string
 	UID     string

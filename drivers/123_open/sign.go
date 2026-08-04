@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+// SignURL appends the anti-leech auth_key expected by the 123 direct link
+// service. An empty privateKey leaves the URL untouched.
 func SignURL(originURL, privateKey string, uid uint64, validDuration time.Duration) (string, error) {
 	if privateKey == "" {
 		return originURL, nil

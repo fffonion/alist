@@ -1,282 +1,202 @@
 package _123Open
 
 import (
-	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/alist-org/alist/v3/drivers/base"
+	"io"
+	"strconv"
+	"sync"
+	"time"
+
 	"github.com/alist-org/alist/v3/internal/driver"
 	"github.com/alist-org/alist/v3/internal/model"
 	"github.com/alist-org/alist/v3/internal/stream"
-	"github.com/alist-org/alist/v3/pkg/http_range"
 	"github.com/alist-org/alist/v3/pkg/utils"
-	"github.com/go-resty/resty/v2"
+	pan123 "github.com/okatu-loli/go-123pan"
 	"golang.org/x/sync/errgroup"
-	"io"
-	"mime/multipart"
-	"net/http"
-	"runtime"
-	"strconv"
-	"time"
 )
 
-func (d *Open123) create(parentFileID int64, filename, etag string, size int64, duplicate int, containDir bool) (*UploadCreateResp, error) {
-	var resp UploadCreateResp
+// completePollInterval is how long to wait between two upload completion
+// checks; the API asks for at least one second.
+var completePollInterval = time.Second
 
-	_, err := d.Request(ApiCreateUploadURL, http.MethodPost, func(req *resty.Request) {
-		body := base.Json{
-			"parentFileID": parentFileID,
-			"filename":     filename,
-			"etag":         etag,
-			"size":         size,
-		}
-		if duplicate > 0 {
-			body["duplicate"] = duplicate
-		}
-		if containDir {
-			body["containDir"] = true
-		}
-		req.SetBody(body)
-	}, &resp)
-
+// Put uploads a file with the v2 flow: create (which may hit the server-side
+// instant upload), upload every slice, then wait for the server to merge them.
+func (d *Open123) Put(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress) (model.Obj, error) {
+	if err := d.ensureToken(ctx); err != nil {
+		return nil, err
+	}
+	if up == nil {
+		up = func(float64) {}
+	}
+	parentFileID, err := parseFileID(dstDir.GetID())
 	if err != nil {
 		return nil, err
 	}
-	return &resp, nil
-}
 
-func (d *Open123) GetUploadDomains() ([]string, error) {
-	var resp struct {
-		Code    int      `json:"code"`
-		Message string   `json:"message"`
-		Data    []string `json:"data"`
-	}
-
-	_, err := d.Request(ApiUploadDomainURL, http.MethodGet, nil, &resp)
-	if err != nil {
-		return nil, err
-	}
-	if resp.Code != 0 {
-		return nil, fmt.Errorf("get upload domain failed: %s", resp.Message)
-	}
-	return resp.Data, nil
-}
-
-func (d *Open123) UploadSingle(ctx context.Context, createResp *UploadCreateResp, file model.FileStreamer, parentID int64) error {
-	domain := createResp.Data.Servers[0]
-
+	// the create call needs the whole file MD5; reuse the stream's own hash
+	// when it has one, otherwise cache the stream and hash it on the way
 	etag := file.GetHash().GetHash(utils.MD5)
-	if len(etag) < utils.MD5.Width {
-		_, _, err := stream.CacheFullInTempFileAndHash(file, utils.MD5)
+	if len(etag) != utils.MD5.Width {
+		_, etag, err = stream.CacheFullInTempFileAndHash(file, utils.MD5)
 		if err != nil {
-			return err
-		}
-	}
-
-	reader, err := file.RangeRead(http_range.Range{Start: 0, Length: file.GetSize()})
-	if err != nil {
-		return err
-	}
-	reader = driver.NewLimitedUploadStream(ctx, reader)
-
-	var b bytes.Buffer
-	mw := multipart.NewWriter(&b)
-	mw.WriteField("parentFileID", fmt.Sprint(parentID))
-	mw.WriteField("filename", file.GetName())
-	mw.WriteField("etag", etag)
-	mw.WriteField("size", fmt.Sprint(file.GetSize()))
-	fw, _ := mw.CreateFormFile("file", file.GetName())
-	_, err = io.Copy(fw, reader)
-	mw.Close()
-
-	req, err := http.NewRequestWithContext(ctx, "POST", domain+ApiSingleUploadURL, &b)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+d.tm.accessToken)
-	req.Header.Set("Platform", "open_platform")
-	req.Header.Set("Content-Type", mw.FormDataContentType())
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var result struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			FileID    int64 `json:"fileID"`
-			Completed bool  `json:"completed"`
-		} `json:"data"`
-	}
-	body, _ := io.ReadAll(resp.Body)
-	if err := json.Unmarshal(body, &result); err != nil {
-		return fmt.Errorf("unmarshal response error: %v, body: %s", err, string(body))
-	}
-	if result.Code != 0 {
-		return fmt.Errorf("upload failed: %s", result.Message)
-	}
-	if !result.Data.Completed || result.Data.FileID == 0 {
-		return fmt.Errorf("upload incomplete or missing fileID")
-	}
-	return nil
-}
-
-func (d *Open123) Upload(ctx context.Context, file model.FileStreamer, parentID int64, createResp *UploadCreateResp, up driver.UpdateProgress) error {
-	if cacher, ok := file.(interface{ CacheFullInTempFile() (model.File, error) }); ok {
-		if _, err := cacher.CacheFullInTempFile(); err != nil {
-			return err
+			return nil, fmt.Errorf("calculate md5 of %s failed: %w", file.GetName(), err)
 		}
 	}
 
 	size := file.GetSize()
-	chunkSize := createResp.Data.SliceSize
-	uploadNums := (size + chunkSize - 1) / chunkSize
-	uploadDomain := createResp.Data.Servers[0]
-
-	if d.UploadThread <= 0 {
-		cpuCores := runtime.NumCPU()
-		threads := cpuCores * 2
-		if threads < 4 {
-			threads = 4
-		}
-		if threads > 16 {
-			threads = 16
-		}
-		d.UploadThread = threads
-		fmt.Printf("[Upload] Auto set upload concurrency: %d (CPU cores=%d)\n", d.UploadThread, cpuCores)
+	created, err := d.client.Upload.Create(ctx, &pan123.UploadCreateRequest{
+		ParentFileID: parentFileID,
+		Filename:     file.GetName(),
+		Etag:         etag,
+		Size:         size,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create upload of %s failed: %w", file.GetName(), err)
 	}
-
-	fmt.Printf("[Upload] File size: %d bytes, chunk size: %d bytes, total slices: %d, concurrency: %d\n",
-		size, chunkSize, uploadNums, d.UploadThread)
-
-	if size <= 1<<30 {
-		return d.UploadSingle(ctx, createResp, file, parentID)
-	}
-
-	if createResp.Data.Reuse {
+	// instant upload: the server already holds this content
+	if created.Reuse {
 		up(100)
-		return nil
+		return uploadedObj(created.FileID, file, etag), nil
+	}
+	if created.PreuploadID == "" {
+		return nil, errors.New("the server returned no preuploadID")
 	}
 
-	client := resty.New()
-	semaphore := make(chan struct{}, d.UploadThread)
-	threadG, _ := errgroup.WithContext(ctx)
+	servers := created.Servers
+	if len(servers) == 0 {
+		servers, err = d.client.Upload.Domains(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("get upload domains failed: %w", err)
+		}
+	}
+	if len(servers) == 0 {
+		return nil, errors.New("the server returned no upload domain")
+	}
+	sliceSize := created.SliceSize
+	if sliceSize <= 0 {
+		return nil, fmt.Errorf("the server returned an invalid slice size %d", sliceSize)
+	}
 
-	var progressArr = make([]int64, uploadNums)
+	// slices are uploaded concurrently, so random access to the content is
+	// required
+	tmpF, err := file.CacheFullInTempFile()
+	if err != nil {
+		return nil, err
+	}
 
-	for partIndex := int64(0); partIndex < uploadNums; partIndex++ {
-		partIndex := partIndex
-		semaphore <- struct{}{}
+	sliceCount := (size + sliceSize - 1) / sliceSize
+	if sliceCount == 0 {
+		sliceCount = 1
+	}
+	uploadThread := d.UploadThread
+	if uploadThread <= 0 {
+		uploadThread = 3
+	}
+	if int64(uploadThread) > sliceCount {
+		uploadThread = int(sliceCount)
+	}
 
+	progress := &uploadProgress{total: size, up: up}
+	threadG, uploadCtx := errgroup.WithContext(ctx)
+	threadG.SetLimit(uploadThread)
+	for i := int64(0); i < sliceCount; i++ {
+		if utils.IsCanceled(uploadCtx) {
+			break
+		}
+		sliceNo := i + 1
+		offset := i * sliceSize
+		length := min(sliceSize, size-offset)
 		threadG.Go(func() error {
-			defer func() { <-semaphore }()
-			offset := partIndex * chunkSize
-			length := min(chunkSize, size-offset)
-			partNumber := partIndex + 1
-
-			fmt.Printf("[Slice %d] Starting read from offset %d, length %d\n", partNumber, offset, length)
-			reader, err := file.RangeRead(http_range.Range{Start: offset, Length: length})
+			sliceMD5, err := utils.HashReader(utils.MD5, io.NewSectionReader(tmpF, offset, length))
 			if err != nil {
-				return fmt.Errorf("[Slice %d] RangeRead error: %v", partNumber, err)
+				return fmt.Errorf("calculate md5 of slice %d failed: %w", sliceNo, err)
 			}
-
-			buf := make([]byte, length)
-			n, err := io.ReadFull(reader, buf)
-			if err != nil && err != io.EOF {
-				return fmt.Errorf("[Slice %d] Read error: %v", partNumber, err)
+			reader := &progressReader{
+				Reader:   io.NewSectionReader(tmpF, offset, length),
+				progress: progress,
 			}
-			buf = buf[:n]
-			hash := md5.Sum(buf)
-			sliceMD5Str := hex.EncodeToString(hash[:])
-
-			body := &bytes.Buffer{}
-			writer := multipart.NewWriter(body)
-			writer.WriteField("preuploadID", createResp.Data.PreuploadID)
-			writer.WriteField("sliceNo", strconv.FormatInt(partNumber, 10))
-			writer.WriteField("sliceMD5", sliceMD5Str)
-			partName := fmt.Sprintf("%s.part%d", file.GetName(), partNumber)
-			fw, _ := writer.CreateFormFile("slice", partName)
-			fw.Write(buf)
-			writer.Close()
-
-			resp, err := client.R().
-				SetHeader("Authorization", "Bearer "+d.tm.accessToken).
-				SetHeader("Platform", "open_platform").
-				SetHeader("Content-Type", writer.FormDataContentType()).
-				SetBody(body.Bytes()).
-				Post(uploadDomain + ApiUploadSliceURL)
-
+			server := servers[int(i)%len(servers)]
+			err = d.client.Upload.UploadSlice(uploadCtx, server, created.PreuploadID, sliceNo, sliceMD5,
+				driver.NewLimitedUploadStream(uploadCtx, reader))
 			if err != nil {
-				return fmt.Errorf("[Slice %d] Upload HTTP error: %v", partNumber, err)
+				return fmt.Errorf("upload slice %d failed: %w", sliceNo, err)
 			}
-			if resp.StatusCode() != 200 {
-				return fmt.Errorf("[Slice %d] Upload failed with status: %s, resp: %s", partNumber, resp.Status(), resp.String())
-			}
-
-			progressArr[partIndex] = length
-			var totalUploaded int64 = 0
-			for _, v := range progressArr {
-				totalUploaded += v
-			}
-			if up != nil {
-				percent := float64(totalUploaded) / float64(size) * 100
-				up(percent)
-			}
-
-			fmt.Printf("[Slice %d] MD5: %s\n", partNumber, sliceMD5Str)
-			fmt.Printf("[Slice %d] Upload finished\n", partNumber)
 			return nil
 		})
 	}
-
 	if err := threadG.Wait(); err != nil {
-		return err
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
-	var completeResp struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-		Data    struct {
-			Completed bool  `json:"completed"`
-			FileID    int64 `json:"fileID"`
-		} `json:"data"`
-	}
-
+	// the server merges and verifies the slices asynchronously
 	for {
-		reqBody := fmt.Sprintf(`{"preuploadID":"%s"}`, createResp.Data.PreuploadID)
-		req, err := http.NewRequestWithContext(ctx, "POST", uploadDomain+ApiUploadCompleteURL, bytes.NewBufferString(reqBody))
+		res, err := d.client.Upload.Complete(ctx, created.PreuploadID)
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("complete upload of %s failed: %w", file.GetName(), err)
 		}
-		req.Header.Set("Authorization", "Bearer "+d.tm.accessToken)
-		req.Header.Set("Platform", "open_platform")
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return err
+		if res.Completed && res.FileID != 0 {
+			up(100)
+			return uploadedObj(res.FileID, file, etag), nil
 		}
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if err := json.Unmarshal(body, &completeResp); err != nil {
-			return fmt.Errorf("completion response unmarshal error: %v, body: %s", err, string(body))
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(completePollInterval):
 		}
-		if completeResp.Code != 0 {
-			return fmt.Errorf("completion API returned error code %d: %s", completeResp.Code, completeResp.Message)
-		}
-		if completeResp.Data.Completed && completeResp.Data.FileID != 0 {
-			fmt.Printf("[Upload] Upload completed successfully. FileID: %d\n", completeResp.Data.FileID)
-			break
-		}
-		time.Sleep(time.Second)
 	}
-	up(100)
-	return nil
+}
+
+// uploadedObj describes the file the server created for an upload.
+func uploadedObj(fileID int64, file model.FileStreamer, etag string) model.Obj {
+	return &model.Object{
+		ID:       strconv.FormatInt(fileID, 10),
+		Name:     file.GetName(),
+		Size:     file.GetSize(),
+		Modified: time.Now(),
+		Ctime:    time.Now(),
+		HashInfo: utils.NewHashInfo(utils.MD5, etag),
+	}
+}
+
+// uploadProgress accumulates the bytes uploaded by all concurrent slices and
+// forwards the overall percentage. Reporting is serialized because the callback
+// is not required to be safe for concurrent use.
+type uploadProgress struct {
+	total int64
+	done  int64
+	mu    sync.Mutex
+	up    driver.UpdateProgress
+}
+
+func (p *uploadProgress) add(n int64) {
+	if p.total <= 0 {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.done += n
+	percentage := float64(p.done) / float64(p.total) * 100
+	if percentage > 100 {
+		percentage = 100
+	}
+	p.up(percentage)
+}
+
+// progressReader reports every byte read to the shared upload progress.
+type progressReader struct {
+	io.Reader
+	progress *uploadProgress
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 {
+		r.progress.add(int64(n))
+	}
+	return n, err
 }

@@ -162,7 +162,8 @@ func (t *DownloadTask) Update() (bool, error) {
 
 func (t *DownloadTask) Transfer() error {
 	toolName := t.tool.Name()
-	if toolName == "115 Cloud" || toolName == "PikPak" || toolName == "Thunder" || toolName == "GuangYaPan" {
+	if toolName == "115 Cloud" || toolName == "PikPak" || toolName == "Thunder" || toolName == "GuangYaPan" ||
+		toolName == Open123ToolName {
 		// 如果不是直接下载到目标路径，则进行转存
 		if t.TempDir != t.DstDirPath {
 			return transferObj(t.Ctx(), t.TempDir, t.DstDirPath, t.DeletePolicy)
