@@ -27,12 +27,10 @@ func (o *Open123) Name() string {
 	return tool.Open123ToolName
 }
 
-// Items registers the scratch directory the tool downloads into when the
-// destination is not a 123 Open storage.
+// Items registers no settings: the scratch directory is written by the
+// dedicated set_123_open endpoint, like the other cloud tools.
 func (o *Open123) Items() []model.SettingItem {
-	return []model.SettingItem{
-		{Key: tool.Open123TempDir, Value: "", Type: conf.TypeString, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE},
-	}
+	return nil
 }
 
 // Run reports NotSupport so the framework drives the task through AddURL and
@@ -46,7 +44,7 @@ func (o *Open123) Init() (string, error) {
 }
 
 func (o *Open123) IsReady() bool {
-	tempDir := setting.GetStr(tool.Open123TempDir)
+	tempDir := setting.GetStr(conf.Open123TempDir)
 	if tempDir == "" {
 		return false
 	}

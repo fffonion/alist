@@ -109,7 +109,7 @@ func AddURL(ctx context.Context, args *AddURLArgs) (task.TaskExtensionInfo, erro
 		if _, ok := storage.(*_123Open.Open123); ok {
 			tempDir = args.DstDirPath
 		} else {
-			tempBase := setting.GetStr(Open123TempDir)
+			tempBase := setting.GetStr(conf.Open123TempDir)
 			if tempBase == "" {
 				return nil, errors.New("123 Open temp dir is not set")
 			}

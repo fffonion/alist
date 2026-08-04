@@ -2,6 +2,7 @@ package handles
 
 import (
 	_115 "github.com/alist-org/alist/v3/drivers/115"
+	_123Open "github.com/alist-org/alist/v3/drivers/123_open"
 	guangyapandriver "github.com/alist-org/alist/v3/drivers/guangyapan"
 	"github.com/alist-org/alist/v3/drivers/pikpak"
 	"github.com/alist-org/alist/v3/drivers/thunder"
@@ -274,6 +275,50 @@ func SetGuangYaPan(c *gin.Context) {
 		return
 	}
 	_tool, err := tool.Tools.Get("GuangYaPan")
+	if err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	if _, err := _tool.Init(); err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	common.SuccessResp(c, "ok")
+}
+
+type SetOpen123Req struct {
+	TempDir string `json:"temp_dir" form:"temp_dir"`
+}
+
+func SetOpen123(c *gin.Context) {
+	var req SetOpen123Req
+	if err := c.ShouldBind(&req); err != nil {
+		common.ErrorResp(c, err, 400)
+		return
+	}
+	if req.TempDir != "" {
+		storage, _, err := op.GetStorageAndActualPath(req.TempDir)
+		if err != nil {
+			common.ErrorStrResp(c, "storage does not exists", 400)
+			return
+		}
+		if storage.Config().CheckStatus && storage.GetStorage().Status != op.WORK {
+			common.ErrorStrResp(c, "storage not init: "+storage.GetStorage().Status, 400)
+			return
+		}
+		if _, ok := storage.(*_123Open.Open123); !ok {
+			common.ErrorStrResp(c, "unsupported storage driver for offline download, only 123 Open is supported", 400)
+			return
+		}
+	}
+	items := []model.SettingItem{
+		{Key: conf.Open123TempDir, Value: req.TempDir, Type: conf.TypeString, Group: model.OFFLINE_DOWNLOAD, Flag: model.PRIVATE},
+	}
+	if err := op.SaveSettingItems(items); err != nil {
+		common.ErrorResp(c, err, 500)
+		return
+	}
+	_tool, err := tool.Tools.Get(tool.Open123ToolName)
 	if err != nil {
 		common.ErrorResp(c, err, 500)
 		return

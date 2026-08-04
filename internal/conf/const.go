@@ -82,6 +82,9 @@ const (
 	// guangyapan
 	GuangYaPanTempDir = "guangyapan_temp_dir"
 
+	// 123 open
+	Open123TempDir = "123_open_temp_dir"
+
 	// single
 	Token         = "token"
 	IndexProgress = "index_progress"

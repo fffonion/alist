@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/alist-org/alist/v3/internal/errs"
-	"github.com/alist-org/alist/v3/internal/model"
 	"github.com/alist-org/alist/v3/internal/offline_download/tool"
 	pan123 "github.com/okatu-loli/go-123pan"
 )
@@ -20,18 +19,12 @@ func TestToolIsRegistered(t *testing.T) {
 	}
 }
 
-// TestItemsRegisterTempDir keeps the setting the tool needs discoverable in the
-// offline download settings group.
-func TestItemsRegisterTempDir(t *testing.T) {
-	items := (&Open123{}).Items()
-	if len(items) != 1 {
-		t.Fatalf("got %d setting items, want 1", len(items))
-	}
-	if items[0].Key != tool.Open123TempDir {
-		t.Errorf("setting key = %q, want %q", items[0].Key, tool.Open123TempDir)
-	}
-	if items[0].Group != model.OFFLINE_DOWNLOAD {
-		t.Errorf("setting group = %d, want the offline download group", items[0].Group)
+// TestItemsRegistersNothing pins the convention shared with the other cloud
+// tools: the scratch directory is written by the dedicated set_123_open
+// endpoint, not seeded as a settings item.
+func TestItemsRegistersNothing(t *testing.T) {
+	if items := (&Open123{}).Items(); len(items) != 0 {
+		t.Fatalf("got %d setting items, want none", len(items))
 	}
 }
 
