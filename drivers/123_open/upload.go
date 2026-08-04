@@ -21,6 +21,10 @@ import (
 // checks; the API asks for at least one second.
 var completePollInterval = time.Second
 
+// completeMaxPolls bounds how long an upload waits for the server to finish
+// merging before it gives up.
+var completeMaxPolls = 60
+
 // Put uploads a file with the v2 flow: create (which may hit the server-side
 // instant upload), upload every slice, then wait for the server to merge them.
 func (d *Open123) Put(ctx context.Context, dstDir model.Obj, file model.FileStreamer, up driver.UpdateProgress) (model.Obj, error) {
@@ -133,15 +137,22 @@ func (d *Open123) Put(ctx context.Context, dstDir model.Obj, file model.FileStre
 		return nil, err
 	}
 
-	// the server merges and verifies the slices asynchronously
-	for {
+	// The server merges and verifies the slices asynchronously. While it is
+	// working it may answer either with completed=false or with an
+	// undocumented business error (observed: code 20103, "文件正在..."), so
+	// both are treated as "not finished yet" and the last one is only
+	// reported once the attempts run out.
+	var lastErr error
+	for i := 0; i < completeMaxPolls; i++ {
 		res, err := d.client.Upload.Complete(ctx, created.PreuploadID)
-		if err != nil {
-			return nil, fmt.Errorf("complete upload of %s failed: %w", file.GetName(), err)
-		}
-		if res.Completed && res.FileID != 0 {
+		switch {
+		case err != nil:
+			lastErr = err
+		case res.Completed && res.FileID != 0:
 			up(100)
 			return uploadedObj(res.FileID, file, etag), nil
+		default:
+			lastErr = nil
 		}
 		select {
 		case <-ctx.Done():
@@ -149,6 +160,10 @@ func (d *Open123) Put(ctx context.Context, dstDir model.Obj, file model.FileStre
 		case <-time.After(completePollInterval):
 		}
 	}
+	if lastErr != nil {
+		return nil, fmt.Errorf("complete upload of %s failed: %w", file.GetName(), lastErr)
+	}
+	return nil, fmt.Errorf("complete upload of %s timed out while the server was merging the slices", file.GetName())
 }
 
 // uploadedObj describes the file the server created for an upload.
