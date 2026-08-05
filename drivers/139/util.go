@@ -597,7 +597,9 @@ func (d *Yun139) personalRequest(pathname string, method string, callback base.R
 		"X-Yun-Api-Version":    "v1",
 		"X-Yun-App-Channel":    "10000034",
 		"X-Yun-Channel-Source": "10000034",
-		"X-Yun-Client-Info":    "||9|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||",
+		// 第三个字段是客户端类型，服务端按它决定单文件上传上限：
+		// 9（网页）和 2（App）为 50 GB，13（PC 客户端）为 500 GB。
+		"X-Yun-Client-Info":    "||13|7.14.0|chrome|120.0.0.0|||windows 10||zh-CN|||dW5kZWZpbmVk||",
 		"X-Yun-Module-Type":    "100",
 		"X-Yun-Svc-Type":       "1",
 	})
