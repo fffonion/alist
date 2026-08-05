@@ -591,7 +591,7 @@ func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStr
 			uploadPartInfos := resp.Data.PartInfos
 
 			// 获取后续分片的上传地址
-			for i := 101; i < len(partInfos); i += 100 {
+			for i := 100; i < len(partInfos); i += 100 {
 				end := i + 100
 				if end > len(partInfos) {
 					end = len(partInfos)
