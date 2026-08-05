@@ -513,6 +513,9 @@ func (d *Yun139) getPartSize(size int64) int64 {
 func (d *Yun139) Put(ctx context.Context, dstDir model.Obj, stream model.FileStreamer, up driver.UpdateProgress) error {
 	switch d.Addition.Type {
 	case MetaPersonalNew:
+		if d.ParallelUpload {
+			return d.putPersonalNewParallel(ctx, dstDir, stream, up)
+		}
 		var err error
 		fullHash := stream.GetHash().GetHash(utils.SHA256)
 		if len(fullHash) != utils.SHA256.Width {

@@ -18,6 +18,8 @@ type Addition struct {
 	CustomUploadPartSize int64  `json:"custom_upload_part_size" type:"number" default:"0"`
 	ReportRealSize       bool   `json:"report_real_size" type:"bool" default:"true"`
 	UseLargeThumbnail    bool   `json:"use_large_thumbnail" type:"bool" default:"false"`
+	ParallelUpload       bool   `json:"parallel_upload" type:"bool" default:"false" help:"personal_new only. Upload parts concurrently the way the official client does. Always buffers the file to the temp dir first, and needs a part size that is a multiple of 64 bytes."`
+	UploadThread         int    `json:"upload_thread" type:"number" default:"3" help:"Number of concurrent part uploads, only used when parallel_upload is enabled."`
 }
 
 var config = driver.Config{
