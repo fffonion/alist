@@ -25,10 +25,21 @@ import (
 // do others that not defined in Driver interface
 
 func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCallback, resp interface{}) ([]byte, error) {
+	d.cookieMu.Lock()
+	cookieStr := d.Cookie
+	d.cookieMu.Unlock()
+	return d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+}
+
+func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, error) {
+	client := base.RestyClient
+	if d.client != nil {
+		client = d.client
+	}
 	u := d.conf.api + pathname
-	req := base.RestyClient.R()
+	req := client.R()
 	req.SetHeaders(map[string]string{
-		"Cookie":  d.Cookie,
+		"Cookie":  cookieStr,
 		"Accept":  "application/json, text/plain, */*",
 		"Referer": d.conf.referer,
 	})
@@ -46,18 +57,22 @@ func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCal
 	if err != nil {
 		return nil, err
 	}
-	__puus := cookie.GetCookie(res.Cookies(), "__puus")
-	if __puus != nil {
-		d.Cookie = cookie.SetStr(d.Cookie, "__puus", __puus.Value)
-		op.MustSaveDriverStorage(d)
-	}
-	if d.UseTransCodingAddress && d.config.Name == "Quark" {
-		__pus := cookie.GetCookie(res.Cookies(), "__pus")
-		if __pus != nil {
-			d.Cookie = cookie.SetStr(d.Cookie, "__pus", __pus.Value)
-			op.MustSaveDriverStorage(d)
+
+	// 与 JS SDK 一致：只有响应包含 __puus 时才接收这批 Set-Cookie，
+	// 然后将响应中的所有 name=value 合并回当前 Cookie。
+	responseCookies := res.Cookies()
+	if cookie.GetCookie(responseCookies, "__puus") != nil {
+		d.cookieMu.Lock()
+		for _, c := range responseCookies {
+			if c.Name != "" {
+				d.Cookie = cookie.SetStr(d.Cookie, c.Name, c.Value)
+			}
 		}
+		// 在锁内持久化，避免并发请求在序列化 Addition 时读到半更新 Cookie。
+		op.MustSaveDriverStorage(d)
+		d.cookieMu.Unlock()
 	}
+
 	if e.Status >= 400 || e.Code != 0 {
 		return nil, errors.New(e.Message)
 	}
@@ -111,18 +126,28 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	}
 	var resp DownResp
 	ua := d.conf.ua
-	_, err := d.request("/file/download", http.MethodPost, func(req *resty.Request) {
+	d.cookieMu.Lock()
+	requestCookie := d.Cookie
+	d.cookieMu.Unlock()
+	_, err := d.requestWithCookie("/file/download", http.MethodPost, func(req *resty.Request) {
 		req.SetHeader("User-Agent", ua).
 			SetBody(data)
-	}, &resp)
+	}, &resp, requestCookie)
 	if err != nil {
 		return nil, err
 	}
 
+	// 与 JS SDK 一致：下载头必须使用 /file/download 响应合并后的最新 cookie。
+	// 夸克在响应 Set-Cookie 中下发的新 __puus 正是 download_url 签名绑定的
+	// 会话状态；用请求前的旧快照访问 OSS 会因状态不匹配返回 412/403。
+	d.cookieMu.Lock()
+	downloadCookie := d.Cookie
+	d.cookieMu.Unlock()
+
 	link := &model.Link{
 		URL: resp.Data[0].DownloadUrl,
 		Header: http.Header{
-			"Cookie":     []string{d.Cookie},
+			"Cookie":     []string{downloadCookie},
 			"Referer":    []string{d.conf.referer},
 			"User-Agent": []string{ua},
 		},

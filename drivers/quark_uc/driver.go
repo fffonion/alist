@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alist-org/alist/v3/drivers/base"
@@ -26,6 +27,12 @@ type QuarkOrUC struct {
 	Addition
 	config driver.Config
 	conf   Conf
+
+	// client 用于测试时注入自定义 client，nil 时使用全局 base.RestyClient
+	client *resty.Client
+
+	// cookieMu 保护 Cookie 的快照和被动更新
+	cookieMu sync.Mutex
 }
 
 func (d *QuarkOrUC) Config() driver.Config {
