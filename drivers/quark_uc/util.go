@@ -156,7 +156,6 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 			"User-Agent": []string{ua},
 		},
 	}
-	d.applyLinkLimit(link)
 	return link, nil
 }
 
