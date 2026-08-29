@@ -28,10 +28,24 @@ func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCal
 	d.cookieMu.Lock()
 	cookieStr := d.Cookie
 	d.cookieMu.Unlock()
-	return d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+	body, _, err := d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+	return body, err
 }
 
-func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, error) {
+func mergeResponseCookies(base string, responseCookies []*http.Cookie) (string, bool) {
+	if cookie.GetCookie(responseCookies, "__puus") == nil {
+		return base, false
+	}
+	merged := base
+	for _, c := range responseCookies {
+		if c.Name != "" {
+			merged = cookie.SetStr(merged, c.Name, c.Value)
+		}
+	}
+	return merged, true
+}
+
+func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, string, error) {
 	client := base.RestyClient
 	if d.client != nil {
 		client = d.client
@@ -55,28 +69,25 @@ func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback b
 	req.SetError(&e)
 	res, err := req.Execute(method, u)
 	if err != nil {
-		return nil, err
+		return nil, cookieStr, err
 	}
 
 	// 与 JS SDK 一致：只有响应包含 __puus 时才接收这批 Set-Cookie，
 	// 然后将响应中的所有 name=value 合并回当前 Cookie。
 	responseCookies := res.Cookies()
-	if cookie.GetCookie(responseCookies, "__puus") != nil {
+	responseCookie, updated := mergeResponseCookies(cookieStr, responseCookies)
+	if updated {
 		d.cookieMu.Lock()
-		for _, c := range responseCookies {
-			if c.Name != "" {
-				d.Cookie = cookie.SetStr(d.Cookie, c.Name, c.Value)
-			}
-		}
+		d.Cookie, _ = mergeResponseCookies(d.Cookie, responseCookies)
 		// 在锁内持久化，避免并发请求在序列化 Addition 时读到半更新 Cookie。
 		op.MustSaveDriverStorage(d)
 		d.cookieMu.Unlock()
 	}
 
 	if e.Status >= 400 || e.Code != 0 {
-		return nil, errors.New(e.Message)
+		return nil, responseCookie, errors.New(e.Message)
 	}
-	return res.Body(), nil
+	return res.Body(), responseCookie, nil
 }
 
 func (d *QuarkOrUC) GetFiles(parent string) ([]model.Obj, error) {
@@ -129,20 +140,13 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	d.cookieMu.Lock()
 	requestCookie := d.Cookie
 	d.cookieMu.Unlock()
-	_, err := d.requestWithCookie("/file/download", http.MethodPost, func(req *resty.Request) {
+	_, downloadCookie, err := d.requestWithCookie("/file/download", http.MethodPost, func(req *resty.Request) {
 		req.SetHeader("User-Agent", ua).
 			SetBody(data)
 	}, &resp, requestCookie)
 	if err != nil {
 		return nil, err
 	}
-
-	// 与 JS SDK 一致：下载头必须使用 /file/download 响应合并后的最新 cookie。
-	// 夸克在响应 Set-Cookie 中下发的新 __puus 正是 download_url 签名绑定的
-	// 会话状态；用请求前的旧快照访问 OSS 会因状态不匹配返回 412/403。
-	d.cookieMu.Lock()
-	downloadCookie := d.Cookie
-	d.cookieMu.Unlock()
 
 	link := &model.Link{
 		URL: resp.Data[0].DownloadUrl,

@@ -66,6 +66,24 @@ func TestRequestIgnoresSetCookieWithoutPuus(t *testing.T) {
 	}
 }
 
+func TestMergeResponseCookiesUsesRequestLocalBase(t *testing.T) {
+	base := "session=base; __puus=before"
+	responseCookies := []*http.Cookie{
+		{Name: "__puus", Value: "after"},
+		{Name: "st", Value: "response-st"},
+	}
+
+	got, updated := mergeResponseCookies(base, responseCookies)
+	if !updated {
+		t.Fatal("expected response cookies to be merged")
+	}
+	for _, want := range []string{"session=base", "__puus=after", "st=response-st"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("merged cookie missing %q: %q", want, got)
+		}
+	}
+}
+
 func TestRequestMergesAllSetCookiesWhenPuusPresent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Set-Cookie", "__puus=new; Path=/")
@@ -137,6 +155,66 @@ func TestGetDownloadLinkUsesResponseMergedCookie(t *testing.T) {
 	defer pathsMu.Unlock()
 	if len(paths) != 1 || paths[0] != "/1/clouddrive/file/download" {
 		t.Fatalf("unexpected request paths: %v", paths)
+	}
+}
+
+func TestConcurrentDownloadLinksKeepTheirOwnResponseCookie(t *testing.T) {
+	const requests = 20
+	var mu sync.Mutex
+	arrived := 0
+	ready := make(chan struct{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		arrived++
+		id := arrived
+		if arrived == requests {
+			close(ready)
+		}
+		mu.Unlock()
+		<-ready
+
+		w.Header().Add("Set-Cookie", fmt.Sprintf("__puus=response-%d; Path=/", id))
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status": 200,
+			"code":   0,
+			"data": []map[string]string{{
+				"download_url": fmt.Sprintf("https://cdn.example/file?id=%d", id),
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	d := newTestDriver(srv.URL)
+	d.Cookie = "session=base; __puus=before"
+	links := make(chan *model.Link, requests)
+	errs := make(chan error, requests)
+	var wg sync.WaitGroup
+	for i := 0; i < requests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			link, err := d.getDownloadLink(&File{Fid: "f1"})
+			if err != nil {
+				errs <- err
+				return
+			}
+			links <- link
+		}()
+	}
+	wg.Wait()
+	close(links)
+	close(errs)
+
+	for err := range errs {
+		t.Fatal(err)
+	}
+	for link := range links {
+		id := strings.TrimPrefix(link.URL, "https://cdn.example/file?id=")
+		want := "__puus=response-" + id
+		if !strings.Contains(link.Header.Get("Cookie"), want) {
+			t.Fatalf("URL %q paired with cookie %q, want %q", link.URL, link.Header.Get("Cookie"), want)
+		}
 	}
 }
 
