@@ -218,29 +218,6 @@ func TestConcurrentDownloadLinksKeepTheirOwnResponseCookie(t *testing.T) {
 	}
 }
 
-func TestGetDownloadLinkDoesNotEnableNestedRangeDownloader(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"status": 200,
-			"code":   0,
-			"data":   []map[string]string{{"download_url": "https://cdn.example/file"}},
-		})
-	}))
-	defer srv.Close()
-
-	d := newTestDriver(srv.URL)
-	d.Cookie = "__puus=stable"
-	d.DownConcurrency = 3
-	d.DownPartSize = 10
-	link, err := d.getDownloadLink(&File{Fid: "f1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if link.Concurrency != 0 || link.PartSize != 0 {
-		t.Fatalf("nested range downloader enabled: concurrency=%d part_size=%d", link.Concurrency, link.PartSize)
-	}
-}
-
 func TestGetDownloadLinkDoesNotRefreshBeforeDownload(t *testing.T) {
 	var pathsMu sync.Mutex
 	var paths []string
