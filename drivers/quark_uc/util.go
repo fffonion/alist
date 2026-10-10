@@ -28,36 +28,49 @@ func (d *QuarkOrUC) request(pathname string, method string, callback base.ReqCal
 	d.cookieMu.Lock()
 	cookieStr := d.Cookie
 	d.cookieMu.Unlock()
-	return d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+	body, _, err := d.requestWithCookie(pathname, method, callback, resp, cookieStr)
+	return body, err
 }
 
 func (d *QuarkOrUC) requestClient() *resty.Client {
-	if d.client != nil {
-		return d.client
+	d.cookieMu.Lock()
+	defer d.cookieMu.Unlock()
+	if d.client == nil {
+		// Cookie 由驱动显式管理，禁用自动缓存以免追加旧值。
+		d.client = base.NewRestyClient().SetCookieJar(nil)
 	}
-	return base.RestyClient
+	return d.client
+}
+
+func mergeResponseCookies(base string, responseCookies []*http.Cookie) (string, bool) {
+	if cookie.GetCookie(responseCookies, "__puus") == nil {
+		return base, false
+	}
+	merged := base
+	for _, c := range responseCookies {
+		if c.Name != "" {
+			merged = cookie.SetStr(merged, c.Name, c.Value)
+		}
+	}
+	return merged, true
 }
 
 func (d *QuarkOrUC) mergeResponseCookies(res *resty.Response) {
 	if res == nil {
 		return
 	}
-	var updated bool
 	d.cookieMu.Lock()
-	__puus := cookie.GetCookie(res.Cookies(), "__puus")
-	if __puus != nil {
-		d.Cookie = cookie.SetStr(d.Cookie, "__puus", __puus.Value)
-		updated = true
-	}
-	if d.UseTransCodingAddress && d.config.Name == "Quark" {
+	defer d.cookieMu.Unlock()
+	merged, updated := mergeResponseCookies(d.Cookie, res.Cookies())
+	if !updated && d.UseTransCodingAddress && d.config.Name == "Quark" {
 		__pus := cookie.GetCookie(res.Cookies(), "__pus")
 		if __pus != nil {
-			d.Cookie = cookie.SetStr(d.Cookie, "__pus", __pus.Value)
+			merged = cookie.SetStr(merged, "__pus", __pus.Value)
 			updated = true
 		}
 	}
-	d.cookieMu.Unlock()
 	if updated {
+		d.Cookie = merged
 		op.MustSaveDriverStorage(d)
 	}
 }
@@ -86,8 +99,8 @@ func (d *QuarkOrUC) preRequestClient() *resty.Client {
 	return client
 }
 
-// requestWithCookie 使用指定的 cookie 发起请求，响应中的 __puus/__pus 会合并回 d.Cookie
-func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, error) {
+// requestWithCookie 使用指定 Cookie 发起请求，返回本次响应合并后的 Cookie
+func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback base.ReqCallback, resp interface{}, cookieStr string) ([]byte, string, error) {
 	u := d.conf.api + pathname
 	req := d.requestClient().R()
 	req.SetHeaders(map[string]string{
@@ -107,18 +120,19 @@ func (d *QuarkOrUC) requestWithCookie(pathname string, method string, callback b
 	req.SetError(&e)
 	res, err := req.Execute(method, u)
 	if err != nil {
-		return nil, err
+		return nil, cookieStr, err
 	}
+	responseCookie, _ := mergeResponseCookies(cookieStr, res.Cookies())
 	d.mergeResponseCookies(res)
 	if e.Status >= 400 || e.Code != 0 {
-		return nil, &providerError{
+		return nil, responseCookie, &providerError{
 			HTTPStatus: res.StatusCode(),
 			Status:     e.Status,
 			Code:       e.Code,
 			Message:    e.Message,
 		}
 	}
-	return res.Body(), nil
+	return res.Body(), responseCookie, nil
 }
 
 func (d *QuarkOrUC) GetFiles(parent string) ([]model.Obj, error) {
@@ -176,13 +190,17 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	}
 	var resp DownResp
 	ua := d.conf.ua
-	_, err := d.request("/file/download", http.MethodPost, func(req *resty.Request) {
+	// 下载 URL 使用本次响应合并后的 Cookie，避免并发请求错配。
+	d.cookieMu.Lock()
+	reqCookie := d.Cookie
+	d.cookieMu.Unlock()
+	_, downloadCookie, err := d.requestWithCookie("/file/download", http.MethodPost, func(req *resty.Request) {
 		if ut != "" {
 			req.SetQueryParam("ut", ut)
 		}
 		req.SetHeader("User-Agent", ua).
 			SetBody(data)
-	}, &resp)
+	}, &resp, reqCookie)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +211,7 @@ func (d *QuarkOrUC) getDownloadLink(file model.Obj) (*model.Link, error) {
 	link := &model.Link{
 		URL: resp.Data[0].DownloadUrl,
 		Header: http.Header{
-			"Cookie":     []string{d.Cookie},
+			"Cookie":     []string{downloadCookie},
 			"Referer":    []string{d.conf.referer},
 			"User-Agent": []string{ua},
 		},

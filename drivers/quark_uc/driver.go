@@ -38,10 +38,10 @@ type QuarkOrUC struct {
 	config driver.Config
 	conf   Conf
 
-	// client 用于测试时注入自定义 client，nil 时使用全局 base.RestyClient
+	// client 为当前存储独立使用的客户端，关闭自动 Cookie jar
 	client *resty.Client
 
-	// cookieMu 保护 d.Cookie 的读-改-写，避免多 goroutine（并发业务请求）竞态
+	// cookieMu 保护 Cookie 的快照、被动更新和客户端初始化
 	cookieMu sync.Mutex
 }
 
